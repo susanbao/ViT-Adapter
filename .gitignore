@@ -132,3 +132,6 @@ swin/
 segmentation/data/
 segmentation/pretrained/
 segmentation/ops/
+segmentation/pro_data/
+segmentation/logs/
+segmentation/work_dirs/

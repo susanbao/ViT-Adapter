@@ -441,7 +441,7 @@ class Mask2FormerHead(BaseDecodeHead):
         attn_mask = attn_mask.sigmoid() < 0.5
         attn_mask = attn_mask.detach()
 
-        return cls_pred, mask_pred, attn_mask
+        return cls_pred, mask_pred, attn_mask, decoder_out
 
     def forward(self, feats, img_metas):
         """Forward function.
@@ -491,10 +491,12 @@ class Mask2FormerHead(BaseDecodeHead):
 
         cls_pred_list = []
         mask_pred_list = []
-        cls_pred, mask_pred, attn_mask = self.forward_head(
+        decoder_out_list = []
+        cls_pred, mask_pred, attn_mask, decoder_out = self.forward_head(
             query_feat, mask_features, multi_scale_memorys[0].shape[-2:])
         cls_pred_list.append(cls_pred)
         mask_pred_list.append(mask_pred)
+        decoder_out_list.append(decoder_out)
 
         for i in range(self.num_transformer_decoder_layers):
             level_idx = i % self.num_transformer_feat_level
@@ -515,14 +517,15 @@ class Mask2FormerHead(BaseDecodeHead):
                 query_key_padding_mask=None,
                 # here we do not apply masking on padded region
                 key_padding_mask=None)
-            cls_pred, mask_pred, attn_mask = self.forward_head(
+            cls_pred, mask_pred, attn_mask, decoder_out = self.forward_head(
                 query_feat, mask_features, multi_scale_memorys[
                     (i + 1) % self.num_transformer_feat_level].shape[-2:])
 
             cls_pred_list.append(cls_pred)
             mask_pred_list.append(mask_pred)
+            decoder_out_list.append(decoder_out)
 
-        return cls_pred_list, mask_pred_list
+        return cls_pred_list, mask_pred_list, decoder_out_list
 
     def forward_train(self, x, img_metas, gt_semantic_seg, gt_labels,
                       gt_masks):
@@ -546,7 +549,7 @@ class Mask2FormerHead(BaseDecodeHead):
         """
 
         # forward
-        all_cls_scores, all_mask_preds = self(x, img_metas)
+        all_cls_scores, all_mask_preds, decoder_out_list = self(x, img_metas)
 
         # loss
         losses = self.loss(all_cls_scores, all_mask_preds, gt_labels, gt_masks,
@@ -568,12 +571,13 @@ class Mask2FormerHead(BaseDecodeHead):
         Returns:
             seg_mask (Tensor): Predicted semantic segmentation logits.
         """
-        all_cls_scores, all_mask_preds = self(inputs, img_metas)
-        cls_score, mask_pred = all_cls_scores[-1], all_mask_preds[-1]
+        all_cls_scores, all_mask_preds, decoder_out_list = self(inputs, img_metas)
+        cls_score, mask_pred, decoder_out = all_cls_scores[-1], all_mask_preds[-1], decoder_out_list[-1]
         ori_h, ori_w, _ = img_metas[0]['ori_shape']
 
         # semantic inference
         cls_score = F.softmax(cls_score, dim=-1)[..., :-1]
         mask_pred = mask_pred.sigmoid()
         seg_mask = torch.einsum('bqc,bqhw->bchw', cls_score, mask_pred)
-        return seg_mask
+        decoder_mask = torch.einsum('bqc,bqhw->bchw', decoder_out, mask_pred)
+        return seg_mask, decoder_mask

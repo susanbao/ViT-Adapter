@@ -17,6 +17,7 @@ from mmcv.utils import DictAction
 from mmseg.apis import multi_gpu_test, single_gpu_test
 from mmseg.datasets import build_dataloader, build_dataset
 from mmseg.models import build_segmentor
+import ipdb
 
 
 def parse_args():
@@ -24,6 +25,9 @@ def parse_args():
         description='mmseg test (and eval) a model')
     parser.add_argument('config', help='test config file path')
     parser.add_argument('checkpoint', help='checkpoint file')
+    parser.add_argument(
+        '--store_result_file',
+        help=('file to store results'))
     parser.add_argument(
         '--work-dir',
         help=('if specified, the evaluation metric results will be dumped'
@@ -109,6 +113,7 @@ def parse_args():
 
 
 def main():
+    # ipdb.set_trace()
     args = parse_args()
     assert args.out or args.eval or args.format_only or args.show \
         or args.show_dir, \
@@ -268,7 +273,7 @@ def main():
             if tmpdir is not None and eval_on_format_results:
                 # remove tmp dir when cityscapes evaluation
                 shutil.rmtree(tmpdir)
-
+    
 
 if __name__ == '__main__':
     main()

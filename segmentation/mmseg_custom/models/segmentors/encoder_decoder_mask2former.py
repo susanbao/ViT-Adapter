@@ -7,7 +7,15 @@ from mmseg.models import builder
 from mmseg.models.builder import SEGMENTORS
 from mmseg.models.segmentors.base import BaseSegmentor
 from mmseg.ops import resize
+import numpy as np
 
+def np_read(file):
+    with open(file, "rb") as outfile:
+        data = np.load(outfile)
+    return data
+def np_write(data, file):
+    with open(file, "wb") as outfile:
+        np.save(outfile, data)
 
 @SEGMENTORS.register_module()
 class EncoderDecoderMask2Former(BaseSegmentor):
@@ -71,13 +79,18 @@ class EncoderDecoderMask2Former(BaseSegmentor):
         """Encode images with backbone and decode into a semantic segmentation
         map of the same size as input."""
         x = self.extract_feat(img)
-        out = self._decode_head_forward_test(x, img_metas)
+        out, decoder_mask = self._decode_head_forward_test(x, img_metas)
         out = resize(
             input=out,
             size=img.shape[2:],
             mode='bilinear',
             align_corners=self.align_corners)
-        return out
+        decoder_mask = resize(
+            input=decoder_mask,
+            size=img.shape[2:],
+            mode='bilinear',
+            align_corners=self.align_corners)
+        return out, decoder_mask
 
     def _decode_head_forward_train(self, x, img_metas, gt_semantic_seg,
                                    **kwargs):
@@ -93,8 +106,8 @@ class EncoderDecoderMask2Former(BaseSegmentor):
     def _decode_head_forward_test(self, x, img_metas):
         """Run forward function and calculate loss for decode head in
         inference."""
-        seg_logits = self.decode_head.forward_test(x, img_metas, self.test_cfg)
-        return seg_logits
+        seg_logits, decoder_mask = self.decode_head.forward_test(x, img_metas, self.test_cfg)
+        return seg_logits, decoder_mask
 
     def _auxiliary_head_forward_train(self, x, img_metas, gt_semantic_seg):
         """Run forward function and calculate loss for auxiliary head in
@@ -168,6 +181,7 @@ class EncoderDecoderMask2Former(BaseSegmentor):
         w_grids = max(w_img - w_crop + w_stride - 1, 0) // w_stride + 1
         preds = img.new_zeros((batch_size, num_classes, h_img, w_img))
         count_mat = img.new_zeros((batch_size, 1, h_img, w_img))
+        decode_outs = img.new_zeros((batch_size, 256, h_img, w_img))
         for h_idx in range(h_grids):
             for w_idx in range(w_grids):
                 y1 = h_idx * h_stride
@@ -177,11 +191,13 @@ class EncoderDecoderMask2Former(BaseSegmentor):
                 y1 = max(y2 - h_crop, 0)
                 x1 = max(x2 - w_crop, 0)
                 crop_img = img[:, :, y1:y2, x1:x2]
-                crop_seg_logit = self.encode_decode(crop_img, img_meta)
+                crop_seg_logit, decoder_mask = self.encode_decode(crop_img, img_meta)
                 preds += F.pad(crop_seg_logit,
                                (int(x1), int(preds.shape[3] - x2), int(y1),
                                 int(preds.shape[2] - y2)))
-
+                decode_outs += F.pad(decoder_mask,
+                               (int(x1), int(preds.shape[3] - x2), int(y1),
+                                int(preds.shape[2] - y2)))
                 count_mat[:, :, y1:y2, x1:x2] += 1
         assert (count_mat == 0).sum() == 0
         if torch.onnx.is_in_onnx_export():
@@ -189,6 +205,7 @@ class EncoderDecoderMask2Former(BaseSegmentor):
             count_mat = torch.from_numpy(
                 count_mat.cpu().detach().numpy()).to(device=img.device)
         preds = preds / count_mat
+        decode_outs = decode_outs / count_mat
         if rescale:
             preds = resize(
                 preds,
@@ -196,6 +213,12 @@ class EncoderDecoderMask2Former(BaseSegmentor):
                 mode='bilinear',
                 align_corners=self.align_corners,
                 warning=False)
+        split = "test"
+        folder_path = "/workspace/ViT-Adapter/segmentation/pro_data/coco_stuff10k/"
+        for batch_idx in range(batch_size):
+            file_name = img_meta[batch_idx]['ori_filename'].split('.')[0] + ".npy"
+            np_write(preds[batch_idx].cpu().numpy(), folder_path + "out/" + split + "/" + file_name)
+            np_write(decode_outs[batch_idx].cpu().numpy(), folder_path + "feature/" + split + "/" + file_name)
         return preds
 
     def whole_inference(self, img, img_meta, rescale):
